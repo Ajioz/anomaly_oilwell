@@ -1,71 +1,105 @@
-# Time-Series Anomaly Detection using LSTM Autoencoder
+# Sensor Anomaly Detection using an Autoencoder
 
-This project demonstrates how to use an LSTM (Long Short-Term Memory) Autoencoder to detect anomalies in time-series data. The primary example (`lstm_autoencoder.py`) uses historical stock price data for General Electric (GE) to identify periods of unusual market behavior.
+This project demonstrates how to use an autoencoder neural network to detect anomalies in time-series sensor data from an industrial machine.
 
-A simpler, non-temporal example (`basic.py`) is also included, which uses a dense autoencoder on a synthetic dataset.
+## Overview
 
-## How It Works
+The primary goal is to identify unusual patterns in sensor readings that may indicate a machine malfunction. We use an autoencoder, a type of unsupervised neural network, which is trained to reconstruct "normal" operational data. When the model is presented with data that deviates from this normal pattern (an anomaly), it will have a high reconstruction error, allowing us to flag it.
 
-The core principle is to train a neural network to learn a compressed representation of "normal" time-series sequences.
+The process involves:
+1.  **Data Exploration and Visualization**: Understanding the sensor data and its relationship with the machine's status.
+2.  **Data Preprocessing**: Preparing the data for the model, including scaling and splitting.
+3.  **Model Training**: Building and training an autoencoder on data representing only normal machine operation.
+4.  **Anomaly Detection**: Establishing a threshold for reconstruction error and using it to identify anomalies in a test dataset that includes normal, broken, and recovering states.
+5.  **Evaluation**: Visualizing the results to confirm the model's effectiveness.
 
-1.  **Training on Normal Data**: An LSTM autoencoder is trained on a dataset containing only normal sequences (in this case, GE stock prices from before 2004). The model's objective is to reconstruct its own input as accurately as possible.
-2.  **Learning Patterns**: The model learns the underlying patterns of normal data and, as a result, can reconstruct it with a very low error (Mean Absolute Error - MAE).
-3.  **Statistical Thresholding**: A statistical threshold is calculated from the reconstruction errors on the normal training data (e.g., the 99th percentile). This threshold represents the maximum error expected for a "normal" sequence.
-4.  **Detecting Anomalies**: When the trained model is given new, unseen data, it attempts to reconstruct it. If a sequence is anomalous (i.e., it doesn't fit the learned patterns), the model will struggle, resulting in a high reconstruction error. Any error that surpasses the pre-defined threshold is flagged as an anomaly.
+## Dataset
 
-## Files in This Project
+The dataset used is `sensor.csv`, which contains time-series data from 51 sensors on a machine.
 
-*   `lstm_autoencoder.py`: The main Python script that loads the GE stock data, builds, trains, and evaluates the LSTM autoencoder.
-*   `data/GE.csv`: The dataset containing historical daily stock prices for General Electric.
-*   `basic.py`: A simpler example of an autoencoder using Dense layers on a synthetic dataset.
-*   `data/anomaly.csv`: A synthetic dataset used by `basic.py` with pre-labeled "Good" and "Bad" data points.
+-   `timestamp`: The timestamp of the sensor reading.
+-   `sensor_00` through `sensor_51`: The readings from the various sensors.
+-   `machine_status`: The status of the machine at the time of the reading. This can be one of three states:
+    -   **NORMAL**: The machine is operating as expected.
+    -   **BROKEN**: The machine has failed.
+    -   **RECOVERING**: The machine is in a transient state after a failure.
 
-## Requirements
+## Methodology
 
-This project requires the following Python libraries. You can install them using pip:
+### 1. Data Preprocessing
 
-```bash
-pip install numpy pandas seaborn matplotlib scikit-learn tensorflow
-```
+The data is split into a training set and a test set based on time.
+
+-   **Training Set**: Contains data exclusively from periods where `machine_status` is `NORMAL`. This is crucial because we want the autoencoder to learn what "normal" looks like.
+-   **Test Set**: Contains data from all machine statuses to evaluate the model's ability to distinguish normal from anomalous behavior.
+
+All sensor features are standardized using `StandardScaler` from scikit-learn. The scaler is fitted *only* on the normal training data to prevent information leakage from the anomalous data in the test set.
+
+### 2. Autoencoder Architecture
+
+A deep autoencoder is built using TensorFlow and Keras. The architecture is symmetrical:
+
+-   **Encoder**: Compresses the input data (51 sensor features) into a lower-dimensional representation (latent space).
+    -   Input (51) -> Dense(32, activation='relu') -> Dense(16, activation='relu') -> Dense(8, activation='relu')
+-   **Decoder**: Attempts to reconstruct the original input data from the compressed representation.
+    -   Latent Space (8) -> Dense(16, activation='relu') -> Dense(32, activation='relu') -> Output(51)
+
+The model is compiled with the `adam` optimizer and uses `mean_absolute_error` (MAE) as the loss function.
+
+### 3. Training and Thresholding
+
+The autoencoder is trained on the preprocessed **normal** data. The goal is for the model to minimize the reconstruction error (the difference between the original input and the reconstructed output).
+
+After training, we calculate the reconstruction loss (MAE) for each sample in the normal training data. A threshold for anomaly detection is then set based on the distribution of these errors. A common approach, used here, is:
+
+`threshold = mean(training_loss) + 3 * std(training_loss)`
+
+### 4. Anomaly Detection
+
+To detect anomalies in the test set, we feed the test data through the trained autoencoder and calculate the reconstruction error for each data point.
+
+-   If `reconstruction_error > threshold`, the data point is classified as an **anomaly**.
+-   If `reconstruction_error <= threshold`, it is classified as **normal**.
+
+## Results
+
+The model successfully identifies the time periods where the machine was in a `BROKEN` state. The visualizations in the notebook clearly show that the reconstruction error spikes significantly during these periods, crossing the defined anomaly threshold. This confirms that the autoencoder effectively learned the patterns of normal operation and can distinguish them from faulty states.
+
+
+*(Example image showing sensor readings with detected anomalies highlighted)*
 
 ## How to Run
 
-To run the main anomaly detection script, navigate to the directory containing the files and execute:
+1.  **Clone the repository:**
+    ```bash
+    git clone <your-repo-url>
+    cd <your-repo-directory>
+    ```
 
-```bash
-python lstm_autoencoder.py
+2.  **Set up a virtual environment (recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+    ```
+
+3.  **Install the required libraries:**
+    The project requires the following Python libraries. You can install them using pip:
+    ```bash
+    pip install pandas numpy scikit-learn tensorflow matplotlib seaborn jupyterlab
+    ```
+
+4.  **Launch Jupyter and run the notebook:**
+    ```bash
+    jupyter lab
+    ```
+    Then, open and run the `sensor_anomaly_detection.ipynb` notebook.
+
+## File Structure
+
+```
+├── sensor_anomaly_detection.ipynb  # The main Jupyter notebook with all the code and analysis.
+├── sensor.csv                      # The dataset file.
+└── README.md                       # This file.
 ```
 
-This will run the script, display several plots for analysis during the process, and show the final anomaly detection results.
-
-## Output Visualizations
-
-The script generates a series of plots to help understand the model's behavior:
-
-1.  **GE Stock Close Price Over Time**: The raw input data, showing the split between training and testing periods.
-2.  **Model Loss**: Training and validation loss curves to check for model convergence and overfitting.
-3.  **Training MAE Distribution**: A histogram of reconstruction errors on the normal data. This is used to set the anomaly threshold.
-4.  **Test MAE Distribution**: A histogram of reconstruction errors on the test data. A wider spread indicates the presence of potential anomalies.
-5.  **Anomaly Scores vs. Threshold**: A time-series plot showing the daily reconstruction error against the calculated anomaly threshold. Spikes above the threshold are flagged as anomalies.
-6.  **Anomalies in GE Stock Price**: The final, conclusive plot showing the original stock price with detected anomalies highlighted in red.
-
-## Key Hyperparameters
-
-These important settings can be tuned at the top of `lstm_autoencoder.py` to adjust the model's behavior:
-
-*   `SEQ_SIZE`: The length of the input sequences (e.g., `30` days). A longer sequence provides more temporal context for the model but increases computational cost.
-*   `THRESHOLD_PERCENTILE`: The sensitivity of the detector. A value of `0.99` means any data with a reconstruction error in the top 1% of normal errors will be flagged as an anomaly.
-    *   **Lowering this value** (e.g., to `0.95`) will make the detector more sensitive but may increase false positives.
-    *   **Increasing this value** (e.g., to `0.995`) will make the detector less sensitive, flagging only the most extreme events.
-
-## The `basic.py` Script
-
-This script provides a much simpler introduction to the concept of autoencoders for anomaly detection.
-
-*   **Data**: It uses the `anomaly.csv` file, which contains synthetic sensor readings (`Power`, `Detector`) and a `Quality` label.
-*   **Model**: It uses a simple `Dense` layer autoencoder, as there is no time-series component.
-*   **Logic**:
-    1.  It trains the autoencoder *only* on the "Good" data.
-    2.  It then calculates the reconstruction error (RMSE) for three groups: a test set of "Good" data, the full "Good" dataset, and the "Bad" data.
-    3.  The script demonstrates that the reconstruction error for "Bad" data is significantly higher than for "Good" data, proving the concept.
-
+This `README.md` provides a solid foundation for your project. You can add or modify sections as you see fit. For example, you might want to create a `requirements.txt` file for easier dependency management.
