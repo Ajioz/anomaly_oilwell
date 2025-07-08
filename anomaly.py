@@ -14,7 +14,6 @@ from tensorflow import set_random_seed
 import tensorflow as tf
 tf.logging.set_verbosity(tf.logging.ERROR)
 
-
-from keras.layers import Input, Dropout, Dense, LSTM, TimeDistributed, RepeatVector
-from keras.models import Model
-from keras import regularizers
+from tensorflow.keras.layers import Input, Dropout, Dense, LSTM, TimeDistributed, RepeatVector
+from tensorflow.keras.models import Model
+from tensorflow.keras import regularizers
