@@ -1,115 +1,148 @@
 import os
 import pandas as pd
 import numpy as np
+import joblib
+import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.externals import joblib
 import seaborn as sns
 import matplotlib.pyplot as plt
-from numpy.random import seed
-from tensorflow import set_random_seed
-import tensorflow as tf
-from tensorflow.keras.layers import Input, Dropout, Dense, LSTM, TimeDistributed, RepeatVector
+from tensorflow.keras.layers import Input, Dense, LSTM, TimeDistributed, RepeatVector
 from tensorflow.keras.models import Model
 from tensorflow.keras import regularizers
 
-# set random seed
-seed(10)
-set_random_seed(10)
+# --- Configuration ---
+DATA_DIR = 'data/bearing_data'
+OUTPUT_CSV = 'Averaged_BearingTest_Dataset.csv'
+SCALER_FILENAME = "scaler_data.gz"
+MODEL_FILENAME = "Cloud_model.h5"
+
+# Set random seed for reproducibility
+tf.random.set_seed(10)
+np.random.seed(10)
+
+# --- Model & Training Hyperparameters ---
+TIME_STEPS = 10  # Number of time steps in each sequence
+EPOCHS = 100
+BATCH_SIZE = 16
+
+
+def create_sequences(X: np.ndarray, time_steps: int = 1):
+    """
+    Creates time-series sequences from a 2D array.
+    """
+    Xs = []
+    for i in range(len(X) - time_steps):
+        v = X[i:(i + time_steps)]
+        Xs.append(v)
+    return np.array(Xs)
+
 
 # load, average and merge sensor samples
-data_dir = 'data/bearing_data'
-merged_data = pd.DataFrame()
+print("Loading and preprocessing data...")
+records = []
 
-for filename in os.listdir(data_dir):
-    dataset = pd.read_csv(os.path.join(data_dir, filename), sep='\t')
-    dataset_mean_abs = np.array(dataset.abs().mean())
-    dataset_mean_abs = pd.DataFrame(dataset_mean_abs.reshape(1,4))
-    dataset_mean_abs.index = [filename]
-    merged_data = merged_data.append(dataset_mean_abs)
+# Check if the data directory exists
+if not os.path.isdir(DATA_DIR):
+    print(f"Error: The directory '{DATA_DIR}' was not found. Please ensure it has been unzipped correctly.")
+    exit()
+
+file_list = sorted(os.listdir(DATA_DIR))
+
+if not file_list:
+    print(f"Error: The directory '{DATA_DIR}' is empty. No files found to process.")
+    exit()
+
+for filename in file_list:
+    # Skip non-data files
+    # Check if the filename matches the expected timestamp format.
+    # This is more robust than checking for file extensions.
+    try:
+        pd.to_datetime(filename, format='%Y.%m.%d.%H.%M.%S')
+    except ValueError:
+        continue
     
-merged_data.columns = ['Bearing 1', 'Bearing 2', 'Bearing 3', 'Bearing 4']
+    dataset_path = os.path.join(DATA_DIR, filename)
+    # Assuming no header in the raw files
+    dataset = pd.read_csv(dataset_path, sep='\t', header=None)
+    dataset_mean_abs = np.array(dataset.abs().mean())
+    records.append((filename, *dataset_mean_abs))
 
+# Create DataFrame efficiently
+merged_data = pd.DataFrame.from_records(records,
+    columns=['timestamp', 'Bearing 1', 'Bearing 2', 'Bearing 3', 'Bearing 4']
+)
 # transform data file index to datetime and sort in chronological order
-merged_data.index = pd.to_datetime(merged_data.index, format='%Y.%m.%d.%H.%M.%S')
-merged_data = merged_data.sort_index()
-merged_data.to_csv('Averaged_BearingTest_Dataset.csv')
-print("Dataset shape:", merged_data.shape)
-merged_data.head()
+merged_data['timestamp'] = pd.to_datetime(merged_data['timestamp'], format='%Y.%m.%d.%H.%M.%S')
+merged_data = merged_data.set_index('timestamp').sort_index()
 
+# --- Sanity Check for Loaded Data ---
+if merged_data.empty:
+    print("\n[ERROR] No data was loaded. The 'merged_data' DataFrame is empty.")
+    print("Please check the 'data/bearing_data' directory and ensure it contains valid .csv or .txt files.")
+    exit()
+else:
+    # Save the merged data only if it's not empty
+    merged_data.to_csv(OUTPUT_CSV)
+    print("\nDataset shape:", merged_data.shape)
+    print(merged_data.head())
+    print(f"\nData successfully loaded for the date range: {merged_data.index.min()} to {merged_data.index.max()}")
+
+# Split data into training and testing sets
 train = merged_data['2004-02-12 10:52:39': '2004-02-15 12:52:39']
 test = merged_data['2004-02-15 12:52:39':]
 print("Training dataset shape:", train.shape)
 print("Test dataset shape:", test.shape)
 
+if train.empty:
+    print("\n[ERROR] The training dataset is empty after slicing by date.")
+    print("Please ensure the hardcoded date range for 'train' overlaps with the loaded data range shown above.")
+    exit()
+
+# --- Plotting Initial Data ---
 fig, ax = plt.subplots(figsize=(14, 6), dpi=80)
-ax.plot(train['Bearing 1'], label='Bearing 1', color='blue', animated = True, linewidth=1)
-ax.plot(train['Bearing 2'], label='Bearing 2', color='red', animated = True, linewidth=1)
-ax.plot(train['Bearing 3'], label='Bearing 3', color='green', animated = True, linewidth=1)
-ax.plot(train['Bearing 4'], label='Bearing 4', color='black', animated = True, linewidth=1)
+ax.plot(train['Bearing 1'], label='Bearing 1', color='blue', linewidth=1)
+ax.plot(train['Bearing 2'], label='Bearing 2', color='red', linewidth=1)
+ax.plot(train['Bearing 3'], label='Bearing 3', color='green', linewidth=1)
+ax.plot(train['Bearing 4'], label='Bearing 4', color='black', linewidth=1)
 plt.legend(loc='lower left')
 ax.set_title('Bearing Sensor Training Data', fontsize=16)
 plt.show()
 
-# transforming data from the time domain to the frequency domain using fast Fourier transform
-train_fft = np.fft.fft(train)
-test_fft = np.fft.fft(test)
-
-# frequencies of the healthy sensor signal
-fig, ax = plt.subplots(figsize=(14, 6), dpi=80)
-ax.plot(train_fft[:,0].real, label='Bearing 1', color='blue', animated = True, linewidth=1)
-ax.plot(train_fft[:,1].imag, label='Bearing 2', color='red', animated = True, linewidth=1)
-ax.plot(train_fft[:,2].real, label='Bearing 3', color='green', animated = True, linewidth=1)
-ax.plot(train_fft[:,3].real, label='Bearing 4', color='black', animated = True, linewidth=1)
-plt.legend(loc='lower left')
-ax.set_title('Bearing Sensor Training Frequency Data', fontsize=16)
-plt.show()
-
-# frequencies of the degrading sensor signal
-fig, ax = plt.subplots(figsize=(14, 6), dpi=80)
-ax.plot(test_fft[:,0].real, label='Bearing 1', color='blue', animated = True, linewidth=1)
-ax.plot(test_fft[:,1].imag, label='Bearing 2', color='red', animated = True, linewidth=1)
-ax.plot(test_fft[:,2].real, label='Bearing 3', color='green', animated = True, linewidth=1)
-ax.plot(test_fft[:,3].real, label='Bearing 4', color='black', animated = True, linewidth=1)
-plt.legend(loc='lower left')
-ax.set_title('Bearing Sensor Test Frequency Data', fontsize=16)
-plt.show()
-
-# normalize the data
+# --- Data Scaling ---
 scaler = MinMaxScaler()
 X_train = scaler.fit_transform(train)
 X_test = scaler.transform(test)
-scaler_filename = "scaler_data"
-joblib.dump(scaler, scaler_filename)
+joblib.dump(scaler, SCALER_FILENAME)
+print(f"Scaler saved to {SCALER_FILENAME}")
 
-# reshape inputs for LSTM [samples, timesteps, features]
-X_train = X_train.reshape(X_train.shape[0], 1, X_train.shape[1])
-print("Training data shape:", X_train.shape)
-X_test = X_test.reshape(X_test.shape[0], 1, X_test.shape[1])
-print("Test data shape:", X_test.shape)
+# --- Create Time-Series Sequences ---
+X_train_seq = create_sequences(X_train, TIME_STEPS)
+X_test_seq = create_sequences(X_test, TIME_STEPS)
+print("Training sequences shape:", X_train_seq.shape)
+print("Test sequences shape:", X_test_seq.shape)
 
 # define the autoencoder network model
 def autoencoder_model(X):
     inputs = Input(shape=(X.shape[1], X.shape[2]))
-    L1 = LSTM(16, activation='relu', return_sequences=True, 
+    L1 = LSTM(32, activation='relu', return_sequences=True,
               kernel_regularizer=regularizers.l2(0.00))(inputs)
-    L2 = LSTM(4, activation='relu', return_sequences=False)(L1)
+    L2 = LSTM(16, activation='relu', return_sequences=False)(L1)
     L3 = RepeatVector(X.shape[1])(L2)
-    L4 = LSTM(4, activation='relu', return_sequences=True)(L3)
-    L5 = LSTM(16, activation='relu', return_sequences=True)(L4)
-    output = TimeDistributed(Dense(X.shape[2]))(L5)    
+    L4 = LSTM(16, activation='relu', return_sequences=True)(L3)
+    L5 = LSTM(32, activation='relu', return_sequences=True)(L4)
+    output = TimeDistributed(Dense(X.shape[2]))(L5)
     model = Model(inputs=inputs, outputs=output)
     return model
 
 # create the autoencoder model
-model = autoencoder_model(X_train)
+model = autoencoder_model(X_train_seq)
 model.compile(optimizer='adam', loss='mae')
 model.summary()
 
 # fit the model to the data
-nb_epochs = 100
-batch_size = 10
-history = model.fit(X_train, X_train, epochs=nb_epochs, batch_size=batch_size,
-                    validation_split=0.05).history
+print("\n--- Training Model ---")
+history = model.fit(X_train_seq, X_train_seq, epochs=EPOCHS, batch_size=BATCH_SIZE,
+                    validation_split=0.05, verbose=1).history
 
 
 # plot the training losses
@@ -122,50 +155,43 @@ ax.set_xlabel('Epoch')
 ax.legend(loc='upper right')
 plt.show()
 
+# --- Determine Anomaly Threshold ---
+print("\n--- Calculating Anomaly Threshold ---")
+X_pred_train = model.predict(X_train_seq)
+train_mae_loss = np.mean(np.abs(X_pred_train - X_train_seq), axis=(1, 2))
 
-# plot the loss distribution of the training set
-X_pred = model.predict(X_train)
-X_pred = X_pred.reshape(X_pred.shape[0], X_pred.shape[2])
-X_pred = pd.DataFrame(X_pred, columns=train.columns)
-X_pred.index = train.index
-
-scored = pd.DataFrame(index=train.index)
-Xtrain = X_train.reshape(X_train.shape[0], X_train.shape[2])
-scored['Loss_mae'] = np.mean(np.abs(X_pred-Xtrain), axis = 1)
 plt.figure(figsize=(16,9), dpi=80)
-plt.title('Loss Distribution', fontsize=16)
-sns.distplot(scored['Loss_mae'], bins = 20, kde= True, color = 'blue');
+plt.title('Loss Distribution on Training Data', fontsize=16)
+sns.histplot(train_mae_loss, bins=50, kde=True, color='blue')
 plt.xlim([0.0,.5])
+plt.show()
 
-# calculate the loss on the test set
-X_pred = model.predict(X_test)
-X_pred = X_pred.reshape(X_pred.shape[0], X_pred.shape[2])
-X_pred = pd.DataFrame(X_pred, columns=test.columns)
-X_pred.index = test.index
+# Set threshold to the 99th percentile of the training loss
+threshold = np.percentile(train_mae_loss, 99)
+print(f"Anomaly threshold (99th percentile of training loss): {threshold:.4f}")
 
-scored = pd.DataFrame(index=test.index)
-Xtest = X_test.reshape(X_test.shape[0], X_test.shape[2])
-scored['Loss_mae'] = np.mean(np.abs(X_pred-Xtest), axis = 1)
-scored['Threshold'] = 0.275
-scored['Anomaly'] = scored['Loss_mae'] > scored['Threshold']
-scored.head()
+# --- Evaluate on Test Data ---
+print("\n--- Evaluating on Test Data ---")
+X_pred_test = model.predict(X_test_seq)
+test_mae_loss = np.mean(np.abs(X_pred_test - X_test_seq), axis=(1, 2))
 
-# calculate the same metrics for the training set 
-# and merge all data in a single dataframe for plotting
-X_pred_train = model.predict(X_train)
-X_pred_train = X_pred_train.reshape(X_pred_train.shape[0], X_pred_train.shape[2])
-X_pred_train = pd.DataFrame(X_pred_train, columns=train.columns)
-X_pred_train.index = train.index
+# Create a DataFrame for plotting
+test_score_df = pd.DataFrame(index=test.index[TIME_STEPS:])
+test_score_df['Loss_mae'] = test_mae_loss
+test_score_df['Threshold'] = threshold
+test_score_df['Anomaly'] = test_score_df['Loss_mae'] > test_score_df['Threshold']
+print(test_score_df.head())
 
-scored_train = pd.DataFrame(index=train.index)
-scored_train['Loss_mae'] = np.mean(np.abs(X_pred_train-Xtrain), axis = 1)
-scored_train['Threshold'] = 0.275
-scored_train['Anomaly'] = scored_train['Loss_mae'] > scored_train['Threshold']
-scored = pd.concat([scored_train, scored])
+# --- Plot Anomalies ---
+anomalies = test_score_df[test_score_df['Anomaly']]
+print("\nDetected anomalies:")
+print(anomalies)
 
 # plot bearing failure time plot
-scored.plot(logy=True,  figsize=(16,9), ylim=[1e-2,1e2], color=['blue','red'])
+test_score_df.plot(logy=True,  figsize=(16,9), ylim=[1e-2,1e2], color=['blue','red'])
+plt.title('Anomaly Detection on Test Data')
+plt.show()
 
 # save all model information, including weights, in h5 format
-model.save("Cloud_model.h5")
-print("Model saved")
+model.save(MODEL_FILENAME)
+print(f"Model saved to {MODEL_FILENAME}")

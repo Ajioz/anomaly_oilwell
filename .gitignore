@@ -150,3 +150,6 @@ cython_debug/
 
 secret/
 .env/
+
+# large folder
+data/
