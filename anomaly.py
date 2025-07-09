@@ -54,11 +54,17 @@ if not file_list:
 
 for filename in file_list:
     # Skip non-data files
-    # Check if the filename matches the expected timestamp format.
-    # This is more robust than checking for file extensions.
-    try:
-        pd.to_datetime(filename, format='%Y.%m.%d.%H.%M.%S')
-    except ValueError:
+    # A more robust way to ensure we're only processing the data files
+    # is to check if the filename can be parsed as a datetime.
+    # This avoids issues with hidden files like '.DS_Store' or other non-data files.
+    is_data_file = False
+    if len(filename.split('.')) == 6: # Basic check for Y.m.d.H.M.S format
+        try:
+            pd.to_datetime(filename, format='%Y.%m.%d.%H.%M.%S')
+            is_data_file = True
+        except ValueError:
+            pass # Filename is not in the expected datetime format
+    if not is_data_file:
         continue
     
     dataset_path = os.path.join(DATA_DIR, filename)
