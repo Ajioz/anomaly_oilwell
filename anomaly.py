@@ -53,25 +53,18 @@ if not file_list:
     exit()
 
 for filename in file_list:
-    # Skip non-data files
-    # A more robust way to ensure we're only processing the data files
-    # is to check if the filename can be parsed as a datetime.
+    # Skip non-data files by checking if the filename can be parsed as a datetime.
     # This avoids issues with hidden files like '.DS_Store' or other non-data files.
-    is_data_file = False
-    if len(filename.split('.')) == 6: # Basic check for Y.m.d.H.M.S format
-        try:
-            pd.to_datetime(filename, format='%Y.%m.%d.%H.%M.%S')
-            is_data_file = True
-        except ValueError:
-            pass # Filename is not in the expected datetime format
-    if not is_data_file:
+    try:
+        pd.to_datetime(filename, format='%Y.%m.%d.%H.%M.%S')
+        dataset_path = os.path.join(DATA_DIR, filename)
+        # Assuming no header in the raw files
+        dataset = pd.read_csv(dataset_path, sep='\t', header=None)
+        dataset_mean_abs = np.array(dataset.abs().mean())
+        records.append((filename, *dataset_mean_abs))
+    except (ValueError, TypeError):
+        # Skip files that don't match the expected datetime format
         continue
-    
-    dataset_path = os.path.join(DATA_DIR, filename)
-    # Assuming no header in the raw files
-    dataset = pd.read_csv(dataset_path, sep='\t', header=None)
-    dataset_mean_abs = np.array(dataset.abs().mean())
-    records.append((filename, *dataset_mean_abs))
 
 # Create DataFrame efficiently
 merged_data = pd.DataFrame.from_records(records,
@@ -84,7 +77,7 @@ merged_data = merged_data.set_index('timestamp').sort_index()
 # --- Sanity Check for Loaded Data ---
 if merged_data.empty:
     print("\n[ERROR] No data was loaded. The 'merged_data' DataFrame is empty.")
-    print("Please check the 'data/bearing_data' directory and ensure it contains valid .csv or .txt files.")
+    print(f"Please check the '{DATA_DIR}' directory and ensure it contains valid data files.")
     exit()
 else:
     # Save the merged data only if it's not empty
@@ -99,9 +92,9 @@ test = merged_data['2004-02-15 12:52:39':]
 print("Training dataset shape:", train.shape)
 print("Test dataset shape:", test.shape)
 
-if train.empty:
-    print("\n[ERROR] The training dataset is empty after slicing by date.")
-    print("Please ensure the hardcoded date range for 'train' overlaps with the loaded data range shown above.")
+if train.empty or test.empty:
+    print("\n[ERROR] The training or test dataset is empty after slicing by date.")
+    print("Please ensure the hardcoded date ranges overlap with the loaded data range shown above.")
     exit()
 
 # --- Plotting Initial Data ---
@@ -165,90 +158,62 @@ ax.legend(loc='upper right')
 plt.show()
 
 # --- Determine Anomaly Threshold ---
-# plot the loss distribution of the training set
 print("\n--- Calculating Anomaly Threshold ---")
 X_pred_train = model.predict(X_train_seq)
-X_pred_train = X_pred_train.reshape(X_pred_train.shape[0], X_pred_train.shape[2])
-X_pred_train = pd.DataFrame(X_pred_train, columns=train.columns)
-X_pred_train.index = train.index
+# Calculate the Mean Absolute Error for each sequence.
+# The result is a 1D array of loss values, one for each input sequence.
+train_mae_loss = np.mean(np.abs(X_pred_train - X_train_seq), axis=(1, 2))
 
-scored = pd.DataFrame(index=train.index)
-Xtrain = X_train_seq.reshape(X_train_seq.shape[0], X_train_seq.shape[2])
-scored['Loss_mae'] = np.mean(np.abs(X_pred_train - Xtrain), axis= 1)
-# scored['Loss_mae'] = np.mean(np.abs(X_pred_train - X_train_seq), axis= 1)
-plt.figure(figsize=(16,9), dpi=80)
-plt.title('Loss Distribution on Training Data', fontsize=16)
-sns.distplot(scored['Loss_mae'], bins = 50, kde= True, color = 'blue')
-plt.xlim([0.0,.5])
-plt.show()
-
-
-'''
-From the above loss distribution on training data, we could set the threshold value @ 0.275 for flagging an anomaly. However, it is best practise to use a percentile instead of hardcoding it. Then, we can then calculate the loss in the test set to check when the output crosses the anomaly threshold.
-'''
 # Set threshold to the 99th percentile of the training loss distribution
 threshold = np.percentile(train_mae_loss, 99)
 print(f"Anomaly threshold (99th percentile of training loss): {threshold:.4f}")
 
+# Plot the loss distribution of the training set to visualize the threshold
+fig, ax = plt.subplots(figsize=(12, 6), dpi=80)
+sns.histplot(train_mae_loss, bins=50, kde=True, color='blue', ax=ax)
+ax.axvline(x=threshold, color='r', linestyle='--', label=f'Threshold = {threshold:.4f}')
+ax.set_title('Loss Distribution on Training Data', fontsize=16)
+ax.set_xlabel('Reconstruction Error (MAE)')
+ax.set_ylabel('Frequency')
+ax.legend()
+plt.show()
+
 # --- Evaluate on Test Data ---
 print("\n--- Evaluating on Test Data ---")
 X_pred_test = model.predict(X_test_seq)
-X_pred_test = X_pred_test.reshape(X_pred_test.shape[0], X_pred_test.shape[2])
-X_pred_test = pd.DataFrame(X_pred_test, columns=test.columns)
-X_pred_test.index = test.index
+test_mae_loss = np.mean(np.abs(X_pred_test - X_test_seq), axis=(1, 2))
 
-scored = pd.DataFrame(index=test.index)
-Xtest = X_test_seq.reshape(X_test_seq.shape[0], X_test_seq.shape[2])
-scored['Loss_mae'] = np.mean(np.abs(X_pred_test - Xtest), axis= 1)
-scored['Threshold'] = threshold
-scored['Anomaly'] = scored['Loss_mae'] > scored['Threshold']
-scored.head()
+# Create a DataFrame to store the loss and anomaly info.
+# The index must be shifted by TIME_STEPS to align with the sequences.
+train_score_df = pd.DataFrame(index=train.index[TIME_STEPS:])
+train_score_df['Loss_mae'] = train_mae_loss
+train_score_df['Threshold'] = threshold
+train_score_df['Anomaly'] = train_score_df['Loss_mae'] > train_score_df['Threshold']
 
+test_score_df = pd.DataFrame(index=test.index[TIME_STEPS:])
+test_score_df['Loss_mae'] = test_mae_loss
+test_score_df['Threshold'] = threshold
+test_score_df['Anomaly'] = test_score_df['Loss_mae'] > test_score_df['Threshold']
 
-#####################
-
-# X_pred = model.predict(X_test)
-# X_pred = X_pred.reshape(X_pred.shape[0], X_pred.shape[2])
-# X_pred = pd.DataFrame(X_pred, columns=test.columns)
-# X_pred.index = test.index
-
-# scored = pd.DataFrame(index=test.index)
-# Xtest = X_test.reshape(X_test.shape[0], X_test.shape[2])
-# scored['Loss_mae'] = np.mean(np.abs(X_pred-Xtest), axis = 1)
-# scored['Threshold'] = 0.275
-# scored['Anomaly'] = scored['Loss_mae'] > scored['Threshold']
-# scored.head()
-
-#####################
-
-# Create a DataFrame for plotting
-# test_score_df = pd.DataFrame(index=test.index[TIME_STEPS:])
-# test_score_df['Loss_mae'] = test_mae_loss
-# test_score_df['Threshold'] = threshold
-# test_score_df['Anomaly'] = test_score_df['Loss_mae'] > test_score_df['Threshold']
-# print(test_score_df.head())
-
-# calculate the same metrics for the training set 
-# and merge all data in a single dataframe for plotting
-X_pred_train = model.predict(X_train)
-X_pred_train = X_pred_train.reshape(X_pred_train.shape[0], X_pred_train.shape[2])
-X_pred_train = pd.DataFrame(X_pred_train, columns=train.columns)
-X_pred_train.index = train.index
-
-scored_train = pd.DataFrame(index=train.index)
-scored_train['Loss_mae'] = np.mean(np.abs(X_pred_train-Xtrain), axis = 1)
-scored_train['Threshold'] = 0.275
-scored_train['Anomaly'] = scored_train['Loss_mae'] > scored_train['Threshold']
-scored = pd.concat([scored_train, scored])
+# Combine train and test scores for plotting
+scored = pd.concat([train_score_df, test_score_df])
 
 # --- Plot Anomalies ---
+# Filter for anomalies only in the test set for reporting
 anomalies = test_score_df[test_score_df['Anomaly']]
 print("\nDetected anomalies:")
 print(anomalies)
 
-# plot bearing failure time plot
-test_score_df.plot(logy=True,  figsize=(16,9), ylim=[1e-2,1e2], color=['blue','red'])
-plt.title('Anomaly Detection on Test Data')
+# Plot the loss and anomalies
+fig, ax = plt.subplots(figsize=(16, 9), dpi=80)
+scored['Loss_mae'].plot(ax=ax, label='Reconstruction Loss', color='blue')
+scored['Threshold'].plot(ax=ax, label='Threshold', color='red', linestyle='--')
+ax.scatter(anomalies.index, anomalies['Loss_mae'], color='red', marker='o', s=50, label='Anomaly')
+ax.set_title('Anomaly Detection: Reconstruction Loss Over Time', fontsize=16)
+ax.set_ylabel('Mean Absolute Error (log scale)')
+ax.set_yscale('log')
+ax.set_ylim(1e-2, 1e2)
+ax.legend(loc='upper left')
 plt.show()
 
 # save all model information, including weights, in h5 format
