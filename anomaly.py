@@ -115,11 +115,13 @@ X_test = scaler.transform(test)
 joblib.dump(scaler, SCALER_FILENAME)
 print(f"Scaler saved to {SCALER_FILENAME}")
 
+
 # --- Create Time-Series Sequences ---
 X_train_seq = create_sequences(X_train, TIME_STEPS)
 X_test_seq = create_sequences(X_test, TIME_STEPS)
 print("Training sequences shape:", X_train_seq.shape)
 print("Test sequences shape:", X_test_seq.shape)
+
 
 # define the autoencoder network model
 def autoencoder_model(X):
@@ -133,6 +135,7 @@ def autoencoder_model(X):
     output = TimeDistributed(Dense(X.shape[2]))(L5)
     model = Model(inputs=inputs, outputs=output)
     return model
+
 
 # create the autoencoder model
 model = autoencoder_model(X_train_seq)
