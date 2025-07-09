@@ -132,13 +132,13 @@ print("Test sequences shape:", X_test_seq.shape)
 # define the autoencoder network model
 def autoencoder_model(X):
     inputs = Input(shape=(X.shape[1], X.shape[2]))
-    L1 = LSTM(32, activation='relu', return_sequences=True,
+    L1 = LSTM(16, activation='relu', return_sequences=True, 
               kernel_regularizer=regularizers.l2(0.00))(inputs)
-    L2 = LSTM(16, activation='relu', return_sequences=False)(L1)
+    L2 = LSTM(4, activation='relu', return_sequences=False)(L1)
     L3 = RepeatVector(X.shape[1])(L2)
-    L4 = LSTM(16, activation='relu', return_sequences=True)(L3)
-    L5 = LSTM(32, activation='relu', return_sequences=True)(L4)
-    output = TimeDistributed(Dense(X.shape[2]))(L5)
+    L4 = LSTM(4, activation='relu', return_sequences=True)(L3)
+    L5 = LSTM(16, activation='relu', return_sequences=True)(L4)
+    output = TimeDistributed(Dense(X.shape[2]))(L5)    
     model = Model(inputs=inputs, outputs=output)
     return model
 
@@ -165,31 +165,81 @@ ax.legend(loc='upper right')
 plt.show()
 
 # --- Determine Anomaly Threshold ---
+# plot the loss distribution of the training set
 print("\n--- Calculating Anomaly Threshold ---")
 X_pred_train = model.predict(X_train_seq)
-train_mae_loss = np.mean(np.abs(X_pred_train - X_train_seq), axis=(1, 2))
+X_pred_train = X_pred_train.reshape(X_pred_train.shape[0], X_pred_train.shape[2])
+X_pred_train = pd.DataFrame(X_pred_train, columns=train.columns)
+X_pred_train.index = train.index
 
+scored = pd.DataFrame(index=train.index)
+Xtrain = X_train_seq.reshape(X_train_seq.shape[0], X_train_seq.shape[2])
+scored['Loss_mae'] = np.mean(np.abs(X_pred_train - Xtrain), axis= 1)
+# scored['Loss_mae'] = np.mean(np.abs(X_pred_train - X_train_seq), axis= 1)
 plt.figure(figsize=(16,9), dpi=80)
 plt.title('Loss Distribution on Training Data', fontsize=16)
-sns.histplot(train_mae_loss, bins=50, kde=True, color='blue')
+sns.distplot(scored['Loss_mae'], bins = 50, kde= True, color = 'blue')
 plt.xlim([0.0,.5])
 plt.show()
 
-# Set threshold to the 99th percentile of the training loss
+
+'''
+From the above loss distribution on training data, we could set the threshold value @ 0.275 for flagging an anomaly. However, it is best practise to use a percentile instead of hardcoding it. Then, we can then calculate the loss in the test set to check when the output crosses the anomaly threshold.
+'''
+# Set threshold to the 99th percentile of the training loss distribution
 threshold = np.percentile(train_mae_loss, 99)
 print(f"Anomaly threshold (99th percentile of training loss): {threshold:.4f}")
 
 # --- Evaluate on Test Data ---
 print("\n--- Evaluating on Test Data ---")
 X_pred_test = model.predict(X_test_seq)
-test_mae_loss = np.mean(np.abs(X_pred_test - X_test_seq), axis=(1, 2))
+X_pred_test = X_pred_test.reshape(X_pred_test.shape[0], X_pred_test.shape[2])
+X_pred_test = pd.DataFrame(X_pred_test, columns=test.columns)
+X_pred_test.index = test.index
+
+scored = pd.DataFrame(index=test.index)
+Xtest = X_test_seq.reshape(X_test_seq.shape[0], X_test_seq.shape[2])
+scored['Loss_mae'] = np.mean(np.abs(X_pred_test - Xtest), axis= 1)
+scored['Threshold'] = threshold
+scored['Anomaly'] = scored['Loss_mae'] > scored['Threshold']
+scored.head()
+
+
+#####################
+
+# X_pred = model.predict(X_test)
+# X_pred = X_pred.reshape(X_pred.shape[0], X_pred.shape[2])
+# X_pred = pd.DataFrame(X_pred, columns=test.columns)
+# X_pred.index = test.index
+
+# scored = pd.DataFrame(index=test.index)
+# Xtest = X_test.reshape(X_test.shape[0], X_test.shape[2])
+# scored['Loss_mae'] = np.mean(np.abs(X_pred-Xtest), axis = 1)
+# scored['Threshold'] = 0.275
+# scored['Anomaly'] = scored['Loss_mae'] > scored['Threshold']
+# scored.head()
+
+#####################
 
 # Create a DataFrame for plotting
-test_score_df = pd.DataFrame(index=test.index[TIME_STEPS:])
-test_score_df['Loss_mae'] = test_mae_loss
-test_score_df['Threshold'] = threshold
-test_score_df['Anomaly'] = test_score_df['Loss_mae'] > test_score_df['Threshold']
-print(test_score_df.head())
+# test_score_df = pd.DataFrame(index=test.index[TIME_STEPS:])
+# test_score_df['Loss_mae'] = test_mae_loss
+# test_score_df['Threshold'] = threshold
+# test_score_df['Anomaly'] = test_score_df['Loss_mae'] > test_score_df['Threshold']
+# print(test_score_df.head())
+
+# calculate the same metrics for the training set 
+# and merge all data in a single dataframe for plotting
+X_pred_train = model.predict(X_train)
+X_pred_train = X_pred_train.reshape(X_pred_train.shape[0], X_pred_train.shape[2])
+X_pred_train = pd.DataFrame(X_pred_train, columns=train.columns)
+X_pred_train.index = train.index
+
+scored_train = pd.DataFrame(index=train.index)
+scored_train['Loss_mae'] = np.mean(np.abs(X_pred_train-Xtrain), axis = 1)
+scored_train['Threshold'] = 0.275
+scored_train['Anomaly'] = scored_train['Loss_mae'] > scored_train['Threshold']
+scored = pd.concat([scored_train, scored])
 
 # --- Plot Anomalies ---
 anomalies = test_score_df[test_score_df['Anomaly']]

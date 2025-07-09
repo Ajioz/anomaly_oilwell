@@ -15,8 +15,8 @@ from tensorflow.keras import regularizers
 # --- Configuration ---
 DATA_DIR = Path('data/bearing_data')
 OUTPUT_CSV = Path('Averaged_BearingTest_Dataset.csv')
-SCALER_FILENAME = Path("scaler_data_fft.gz")
-MODEL_FILENAME = Path("Cloud_model_fft.h5")
+SCALER_FILENAME = Path("scaler_data.gz")   # Changed from _fft
+MODEL_FILENAME = Path("Cloud_model.h5")     # Changed from _fft
 EPOCHS = 100
 BATCH_SIZE = 10
 
@@ -28,21 +28,27 @@ def load_or_preprocess_data(data_dir: Path, output_csv: Path) -> pd.DataFrame:
     if output_csv.exists():
         logging.info(f"Found preprocessed data at '{output_csv}'. Loading from file.")
         return pd.read_csv(output_csv, index_col='timestamp', parse_dates=True)
+    
     logging.info(f"No preprocessed data found. Processing raw data from '{data_dir}'...")
     if not data_dir.is_dir():
         raise FileNotFoundError(f"Data directory '{data_dir}' not found.")
+    
     records = []
     for filename in sorted(data_dir.iterdir()):
-        if len(filename.name.split('.')) == 6:
-            try:
-                pd.to_datetime(filename.name, format='%Y.%m.%d.%H.%M.%S')
-                dataset = pd.read_csv(filename, sep='\t', header=None)
-                dataset_mean_abs = np.array(dataset.abs().mean())
-                records.append((filename.name, *dataset_mean_abs))
-            except Exception:
-                continue
+        # A more robust way to ensure we're only processing the data files
+        try:
+            # Check if the filename can be parsed as a datetime.
+            pd.to_datetime(filename.name, format='%Y.%m.%d.%H.%M.%S')
+            dataset = pd.read_csv(filename, sep='\t', header=None)
+            dataset_mean_abs = np.array(dataset.abs().mean())
+            records.append((filename.name, *dataset_mean_abs))
+        except (ValueError, TypeError):
+            # Skip non-data files like '.DS_Store' or other formats
+            continue
+            
     if not records:
-        raise ValueError("No valid data files found.")
+        raise ValueError(f"No valid data files found in '{data_dir}'.")
+        
     merged_data = pd.DataFrame.from_records(
         records,
         columns=['timestamp', 'Bearing 1', 'Bearing 2', 'Bearing 3', 'Bearing 4']
@@ -54,6 +60,7 @@ def load_or_preprocess_data(data_dir: Path, output_csv: Path) -> pd.DataFrame:
     return merged_data
 
 def plot_bearings(data: pd.DataFrame, title: str):
+    """Plots the time-series data for all bearings."""
     plt.figure(figsize=(14, 6), dpi=80)
     for i, color in zip(range(1, 5), ['blue', 'red', 'green', 'black']):
         plt.plot(data[f'Bearing {i}'], label=f'Bearing {i}', color=color, linewidth=1)
@@ -61,40 +68,60 @@ def plot_bearings(data: pd.DataFrame, title: str):
     plt.title(title, fontsize=16)
     plt.show()
 
-def apply_fft(data: pd.DataFrame):
-    fft = np.fft.rfft(data.values, axis=0)
-    return fft, np.abs(fft)
-
-def plot_fft(fft, title: str):
-    plt.figure(figsize=(14, 6), dpi=80)
-    for i, color in zip(range(4), ['blue', 'red', 'green', 'black']):
-        plt.plot(fft[:, i].real, label=f'Bearing {i+1}', color=color, linewidth=1)
+def plot_bearings_fft(train_fft: np.ndarray):
+    """Plots the frequency domain (FFT) data for all bearings."""
+    fig, ax = plt.subplots(figsize=(14, 6), dpi=80)
+    ax.plot(train_fft[:, 0].real, label='Bearing 1', color='blue', animated=True, linewidth=1)
+    ax.plot(train_fft[:, 1].imag, label='Bearing 2', color='red', animated=True, linewidth=1)
+    ax.plot(train_fft[:, 2].real, label='Bearing 3', color='green', animated=True, linewidth=1)
+    ax.plot(train_fft[:, 3].real, label='Bearing 4', color='black', animated=True, linewidth=1)
     plt.legend(loc='lower left')
-    plt.title(title, fontsize=16)
+    ax.set_title('Bearing Sensor Training Frequency Data', fontsize=16)
     plt.show()
 
-def scale_data(train, test):
+
+def plot_bearings_test_fft(test_fft: np.ndarray):
+    """Plots the frequency domain (FFT) data for all bearings in the test set."""
+    fig, ax = plt.subplots(figsize=(14, 6), dpi=80)
+    ax.plot(test_fft[:, 0].real, label='Bearing 1', color='blue', animated=True, linewidth=1)
+    ax.plot(test_fft[:, 1].imag, label='Bearing 2', color='red', animated=True, linewidth=1)
+    ax.plot(test_fft[:, 2].real, label='Bearing 3', color='green', animated=True, linewidth=1)
+    ax.plot(test_fft[:, 3].real, label='Bearing 4', color='black', animated=True, linewidth=1)
+    plt.legend(loc='lower left')
+    ax.set_title('Bearing Sensor Test Frequency Data', fontsize=16)
+    plt.show()
+
+def scale_data(train_df: pd.DataFrame, test_df: pd.DataFrame, scaler_path: Path):
+    """Scales the data using MinMaxScaler and saves the scaler."""
     scaler = MinMaxScaler()
-    X_train_scaled = scaler.fit_transform(train)
-    X_test_scaled = scaler.transform(test)
-    joblib.dump(scaler, SCALER_FILENAME)
-    logging.info(f"Scaler for FFT features saved to {SCALER_FILENAME}")
+    X_train_scaled = scaler.fit_transform(train_df)
+    X_test_scaled = scaler.transform(test_df)
+    joblib.dump(scaler, scaler_path)
+    logging.info(f"Scaler saved to {scaler_path}")
     return X_train_scaled, X_test_scaled
 
-def reshape_for_lstm(X):
+def reshape_for_lstm(X: np.ndarray) -> np.ndarray:
+    """Reshapes 2D array to 3D for LSTM input [samples, timesteps, features]."""
     return X.reshape(X.shape[0], 1, X.shape[1])
 
 def autoencoder_model(input_shape):
+    """Defines and returns the LSTM autoencoder model."""
     inputs = Input(shape=input_shape)
+    # Encoder
     x = LSTM(16, activation='relu', return_sequences=True, kernel_regularizer=regularizers.l2(0.00))(inputs)
     x = LSTM(4, activation='relu', return_sequences=False)(x)
+    # Bottleneck
     x = RepeatVector(input_shape[0])(x)
+    # Decoder
     x = LSTM(4, activation='relu', return_sequences=True)(x)
     x = LSTM(16, activation='relu', return_sequences=True)(x)
     outputs = TimeDistributed(Dense(input_shape[1]))(x)
-    return Model(inputs, outputs)
+    
+    model = Model(inputs, outputs)
+    return model
 
-def plot_loss_distribution(loss, title):
+def plot_loss_distribution(loss: np.ndarray, title: str):
+    """Plots the distribution of the reconstruction loss."""
     plt.figure(figsize=(12, 6))
     sns.histplot(loss, bins=50, kde=True, color='blue')
     plt.title(title)
@@ -108,7 +135,7 @@ def main():
     # Load and preprocess data
     try:
         merged_data = load_or_preprocess_data(DATA_DIR, OUTPUT_CSV)
-    except Exception as e:
+    except (FileNotFoundError, ValueError) as e:
         logging.error(e)
         return
 
@@ -121,19 +148,15 @@ def main():
     logging.info(f"Training dataset shape: {train.shape}")
     logging.info(f"Test dataset shape: {test.shape}")
 
-    plot_bearings(train, 'Bearing Sensor Training Data')
-
-    # FFT
-    logging.info("--- Applying Fast Fourier Transform (FFT) ---")
-    train_fft, X_train_fft = apply_fft(train)
-    test_fft, X_test_fft = apply_fft(test)
-    logging.info(f"Shape of FFT features for training: {X_train_fft.shape}")
-
-    plot_fft(train_fft, 'Bearing Sensor Training Frequency Data')
-    plot_fft(test_fft, 'Bearing Sensor Test Frequency Data')
-
+    plot_bearings(train, 'Bearing Sensor Training Data (Time-Domain)')
+    plot_bearings_fft(train_fft: np.ndarray)
+    plot_bearings_test_fft(test_fft: np.ndarray)
+    
     # Scaling
-    X_train_scaled, X_test_scaled = scale_data(X_train_fft, X_test_fft)
+    logging.info("--- Scaling Time-Domain Data ---")
+    X_train_scaled, X_test_scaled = scale_data(train, test, SCALER_FILENAME)
+    
+    # Reshape for LSTM
     X_train_reshaped = reshape_for_lstm(X_train_scaled)
     X_test_reshaped = reshape_for_lstm(X_test_scaled)
     logging.info(f"Training sequences shape: {X_train_reshaped.shape}")
@@ -144,41 +167,47 @@ def main():
     model.compile(optimizer='adam', loss='mae')
     model.summary()
 
-    logging.info("--- Training Model on FFT Features ---")
+    logging.info("--- Training Model on Time-Domain Data ---")
     history = model.fit(
         X_train_reshaped, X_train_reshaped,
         epochs=EPOCHS, batch_size=BATCH_SIZE,
         validation_split=0.05, verbose=1
     )
 
-    # Threshold
+    # Threshold Calculation
     logging.info("--- Calculating Anomaly Threshold ---")
     X_pred_train = model.predict(X_train_reshaped)
     train_mae_loss = np.mean(np.abs(X_pred_train - X_train_reshaped), axis=(1, 2))
-    plot_loss_distribution(train_mae_loss, 'Loss Distribution on Training Data (FFT Features)')
+    plot_loss_distribution(train_mae_loss, 'Loss Distribution on Training Data (Time-Domain)')
+    
     threshold = np.percentile(train_mae_loss, 99)
     logging.info(f"Anomaly threshold (99th percentile of training loss): {threshold:.4f}")
 
-    # Test evaluation
+    # Test Evaluation
     logging.info("--- Evaluating on Test Data ---")
     X_pred_test = model.predict(X_test_reshaped)
     test_mae_loss = np.mean(np.abs(X_pred_test - X_test_reshaped), axis=(1, 2))
+    
+    # This is where the original error occurred. Now lengths will match.
     test_score_df = pd.DataFrame(index=test.index)
     test_score_df['Loss_mae'] = test_mae_loss
     test_score_df['Threshold'] = threshold
     test_score_df['Anomaly'] = test_score_df['Loss_mae'] > test_score_df['Threshold']
+    
     anomalies = test_score_df[test_score_df['Anomaly']]
     logging.info(f"\nDetected anomalies:\n{anomalies}")
 
     # Plot anomalies
     plt.figure(figsize=(16, 8))
-    test_score_df[['Loss_mae', 'Threshold']].plot(logy=True, ylim=[1e-2, 1e2])
-    plt.title('Anomaly Detection on Test Data (FFT Features)')
+    # Use a new Axes object for plotting to avoid potential conflicts
+    ax = test_score_df.plot(logy=True, figsize=(16, 8), ylim=[1e-2, 1e2], title='Anomaly Detection on Test Data (Time-Domain)')
+    ax.plot(anomalies.index, anomalies.Loss_mae, 'ro', markersize=10, label='Anomaly')
+    plt.legend()
     plt.show()
 
     # Save model
     model.save(MODEL_FILENAME)
-    logging.info(f"Model trained on FFT features saved to {MODEL_FILENAME}")
+    logging.info(f"Model trained on time-domain data saved to {MODEL_FILENAME}")
 
 if __name__ == "__main__":
     main()
