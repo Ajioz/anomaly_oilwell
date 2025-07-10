@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import joblib
@@ -9,6 +10,8 @@ import matplotlib.pyplot as plt
 from tensorflow.keras.layers import Input, Dense, LSTM, TimeDistributed, RepeatVector
 from tensorflow.keras.models import Model
 from tensorflow.keras import regularizers
+import io
+from contextlib import redirect_stdout
 
 # --- Configuration ---
 DATA_DIR = 'data/bearing_data'
@@ -35,6 +38,44 @@ def create_sequences(X: np.ndarray, time_steps: int = 1):
         v = X[i:(i + time_steps)]
         Xs.append(v)
     return np.array(Xs)
+
+
+def generate_report(model, hyperparameters, report_path="reports/training_report.txt"):
+    """
+    Generates a text report with a model summary and a list of hyperparameters.
+
+    Args:
+        model (tf.keras.Model): The compiled Keras model.
+        hyperparameters (dict): A dictionary of hyperparameters for logging.
+        report_path (str or Path): The path to save the report file.
+    """
+    report_path = Path(report_path)
+    # Ensure the parent directory exists
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Capture model.summary() output into a string
+    stream = io.StringIO()
+    with redirect_stdout(stream):
+        model.summary()
+    model_summary_str = stream.getvalue()
+
+    with open(report_path, 'w', encoding='utf-8') as f:
+        # --- Model Summary Section ---
+        f.write("="*80 + "\n")
+        f.write("Model Summary Table\n")
+        f.write("="*80 + "\n")
+        f.write(model_summary_str)
+        f.write("\n\n")
+
+        # --- Hyperparameters Section ---
+        f.write("="*80 + "\n")
+        f.write("Full Hyperparameter List\n")
+        f.write("="*80 + "\n")
+        for key, value in hyperparameters.items():
+            f.write(f"{key:<25}: {value}\n")
+        f.write("\n")
+
+    print(f"Training report saved to: {report_path}")
 
 
 # load, average and merge sensor samples
@@ -140,6 +181,22 @@ def autoencoder_model(X):
 model = autoencoder_model(X_train_seq)
 model.compile(optimizer='adam', loss='mae')
 model.summary()
+
+# --- Generate Report ---
+print("\n--- Generating Training Report ---")
+# Collate hyperparameters for the report
+hyperparameters = {
+    'TIME_STEPS': TIME_STEPS,
+    'EPOCHS': EPOCHS,
+    'BATCH_SIZE': BATCH_SIZE,
+    'VALIDATION_SPLIT': 0.05,
+    'LSTM_UNITS_L1': 16,
+    'LSTM_UNITS_L2': 4,
+    'REGULARIZATION': 'l2(0.00)',
+    'OPTIMIZER': 'adam',
+    'LOSS_FUNCTION': 'mae'
+}
+generate_report(model, hyperparameters)
 
 # fit the model to the data
 print("\n--- Training Model ---")
